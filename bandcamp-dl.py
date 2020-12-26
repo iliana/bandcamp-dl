@@ -57,10 +57,7 @@ def build_request(url, identity=None, *args, **kwargs):
     return req
 
 
-def bc_json(path, identity, data=None, **kwargs):
-    url = urllib.parse.urljoin("https://bandcamp.com/api/", path)
-    if kwargs:
-        url += "?" + urllib.parse.urlencode(kwargs)
+def bc_json(url, identity, data=None):
     logging.info(f"fetch {url} as json")
     if data:
         data = json.dumps(data).encode("utf-8")
@@ -68,15 +65,18 @@ def bc_json(path, identity, data=None, **kwargs):
         return json.load(f)
 
 
-def bc_download(url, identity, format):
+def bc_pagedata(url, identity):
     logging.info(f"fetch {url} as html")
     with urllib.request.urlopen(build_request(url, identity)) as f:
         for line in f.readlines():
             line = line.decode(f.headers.get_content_charset())
             if "pagedata" in line and "data-blob" in line:
                 break
-    blob = json.loads(html.unescape(line.split('data-blob="')[1].split('"')[0]))
-    for item in blob["digital_items"]:
+    return json.loads(html.unescape(line.split('data-blob="')[1].split('"')[0]))
+
+
+def bc_download(url, identity, format):
+    for item in bc_pagedata(url, identity)["digital_items"]:
         eprint(
             f"{CLEAR}{item['artist']} - {item['title']} ({item['download_id']}): ",
             end="",
@@ -160,10 +160,12 @@ if __name__ == "__main__":
         eprint("Failed to load identity cookie for bandcamp.com")
         sys.exit(1)
 
-    summary = bc_json("fan/2/collection_summary", identity)
+    summary = bc_json("https://bandcamp.com/api/fan/2/collection_summary", identity)
     data = dict(username=summary["collection_summary"]["username"], platform="nix")
     while True:
-        res = bc_json("orderhistory/1/get_items", identity, data)
+        res = bc_json(
+            "https://bandcamp.com/api/orderhistory/1/get_items", identity, data
+        )
         if res.get("error") == "invalid_crumb":
             data["crumb"] = res["crumb"]
             continue
