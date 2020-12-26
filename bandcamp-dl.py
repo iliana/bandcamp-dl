@@ -12,6 +12,7 @@ import os.path
 import sys
 import urllib.parse
 import urllib.request
+from collections import namedtuple
 
 try:
     import browser_cookie3
@@ -26,6 +27,8 @@ USER_AGENT = (
     + "{0}.{1}".format(*sys.version_info[:2])
 )
 CLEAR = "\033[K"
+
+Item = namedtuple("Item", ["artist", "title", "id", "download_url"])
 
 
 def get_identity(identity):
@@ -57,7 +60,8 @@ def build_request(url, identity=None, *args, **kwargs):
     return req
 
 
-def bc_json(url, identity, data=None):
+def bc_json(path, identity, data=None):
+    url = urllib.parse.urljoin("https://bandcamp.com/api/", path)
     logging.info(f"fetch {url} as json")
     if data:
         data = json.dumps(data).encode("utf-8")
@@ -76,64 +80,115 @@ def bc_pagedata(url, identity):
 
 
 def bc_download(url, identity, format):
-    for item in bc_pagedata(url, identity)["digital_items"]:
-        eprint(
-            f"{CLEAR}{item['artist']} - {item['title']} ({item['download_id']}): ",
-            end="",
-        )
-        if already_downloaded(item["download_id"]):
-            eprint("already downloaded")
-            continue
-        eprint("starting...", end="\r")
-        # munge the download URL to request the correct URL for the bcbits CDN
-        url = item["downloads"][format]["url"]
-        split = urllib.parse.urlsplit(url.replace("/download/", "/statdownload/"))
-        query = urllib.parse.parse_qsl(split.query)
-        query.append((".vrs", 1))
-        split = split._replace(query=urllib.parse.urlencode(query))
-        url = urllib.parse.urlunsplit(split)
-        # then fetch that to get the bcbits URL
-        req = build_request(url, identity)
-        req.add_header("accept", "application/json")
-        logging.info(f"fetch {url} as json")
-        with urllib.request.urlopen(req) as f:
-            data = json.load(f)
-        yield data["download_url"]
+    items = bc_pagedata(url, identity)["digital_items"]
+    assert len(items) == 1
+    url = items[0]["downloads"][format]["url"]
+    # munge the download URL to request the correct URL for the bcbits CDN
+    split = urllib.parse.urlsplit(url.replace("/download/", "/statdownload/"))
+    query = urllib.parse.parse_qsl(split.query)
+    query.append((".vrs", 1))
+    split = split._replace(query=urllib.parse.urlencode(query))
+    url = urllib.parse.urlunsplit(split)
+    # then fetch that to get the bcbits URL
+    req = build_request(url, identity)
+    req.add_header("accept", "application/json")
+    logging.info(f"fetch {url} as json")
+    with urllib.request.urlopen(req) as f:
+        data = json.load(f)
+    return data["download_url"]
 
 
-def download_file(url):
-    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+def download_file(item, url):
     logging.info(f"download {url}")
     with urllib.request.urlopen(build_request(url)) as f:
         for x in f.headers["content-disposition"].split(";"):
             x = x.strip()
-            if x.startswith("filename="):
-                filename = x.split('"')[1]
+            if x.startswith("filename*=UTF-8''"):
+                filename = urllib.parse.unquote(x.split("''", 1)[1])
         split = filename.rsplit(".", 1)
-        filename = f"{split[0]} ({query['id'][0]}).{split[1]}"
-        length = int(f.headers["content-length"])
+        filename = f"{split[0]} ({item.id}).{split[1]}"
+        size = int(f.headers["content-length"])
         try:
             with open(filename, "wb") as t:
-                read = 0
+                at = 0
                 while True:
                     buf = f.read(16 * 1024)
                     if not buf:
-                        eprint()
                         break
                     t.write(buf)
-                    read += len(buf)
-                    eprint(f"{CLEAR}{filename}: {(read * 100) // length}%", end="\r")
+                    at += len(buf)
+                    progress(filename, at=at, size=size)
         except:  # noqa=E722
             os.remove(filename)
             raise
 
 
-def already_downloaded(id):
-    return len(glob.glob(f"*({id})*")) > 0
+def collection(identity):
+    summary = bc_json("fan/2/collection_summary", identity)["collection_summary"]
+    pagedata = bc_pagedata(f"https://bandcamp.com/{summary['username']}", identity)
+
+    for kind in ("collection", "hidden"):
+        yield from items(
+            {
+                "items": pagedata["item_cache"][kind].values(),
+                "redownload_urls": pagedata["collection_data"]["redownload_urls"],
+            }
+        )
+        data = {
+            "fan_id": summary["fan_id"],
+            "older_than_token": pagedata[f"{kind}_data"]["last_token"],
+        }
+        while True:
+            res = bc_json(f"fancollection/1/{kind}_items", identity, data)
+            yield from items(res)
+            if res["more_available"]:
+                data["older_than_token"] = res["last_token"]
+            else:
+                break
 
 
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
+def items(data):
+    for item in data["items"]:
+        # some items are not actually downloadable! these can be detected with
+        # a null featured_track
+        if item["featured_track"] is None:
+            continue
+        sid = "{sale_item_type}{sale_item_id}".format(**item)
+        yield Item(
+            artist=item["band_name"],
+            title=item["item_title"],
+            id=item["tralbum_id"],
+            download_url=data["redownload_urls"][sid],
+        )
+
+
+def already_downloaded(item):
+    g = glob.glob(f"*({item.id})*")
+    if g:
+        progress(g[0], skip=True)
+        return True
+    else:
+        return False
+
+
+def progress(item, skip=None, at=None, size=None):
+    if isinstance(item, Item):
+        data = f"{item.artist} - {item.title}"
+        if item.id:
+            data += f" ({item.id})"
+    else:
+        data = item
+
+    if skip:
+        state = "already downloaded"
+    elif at:
+        state = f"{at * 100 // size}%"
+    else:
+        state = "starting..."
+
+    print(f"{CLEAR}{data}: {state}", file=sys.stderr, end="\r", flush=True)
+    if skip or (at and at == size):
+        print(file=sys.stderr)
 
 
 if __name__ == "__main__":
@@ -157,33 +212,11 @@ if __name__ == "__main__":
 
     identity = get_identity(args.identity)
     if identity is None:
-        eprint("Failed to load identity cookie for bandcamp.com")
+        print("Failed to load identity cookie for bandcamp.com", file=sys.stderr)
         sys.exit(1)
 
-    summary = bc_json("https://bandcamp.com/api/fan/2/collection_summary", identity)
-    data = dict(username=summary["collection_summary"]["username"], platform="nix")
-    while True:
-        res = bc_json(
-            "https://bandcamp.com/api/orderhistory/1/get_items", identity, data
-        )
-        if res.get("error") == "invalid_crumb":
-            data["crumb"] = res["crumb"]
+    for item in collection(identity):
+        if already_downloaded(item):
             continue
-
-        for item in res["items"]:
-            if item["download_id"]:
-                eprint(
-                    f"{item['artist_name']} - {item['item_title']} "
-                    f"({item['download_id']}): ",
-                    end="",
-                )
-                if already_downloaded(item["download_id"]):
-                    eprint("already downloaded")
-                else:
-                    eprint("starting...", end="\r")
-                    for url in bc_download(item["download_url"], identity, args.format):
-                        download_file(url)
-
-        if res["last_token"] is None:
-            break
-        data["last_token"] = res["last_token"]
+        progress(item)
+        download_file(item, bc_download(item.download_url, identity, args.format))
