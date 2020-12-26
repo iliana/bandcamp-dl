@@ -76,21 +76,29 @@ def bc_download(url, identity, format):
             if "pagedata" in line and "data-blob" in line:
                 break
     blob = json.loads(html.unescape(line.split('data-blob="')[1].split('"')[0]))
-    item = blob["download_items"][0]
-    # munge the download URL to request the correct URL for the bcbits CDN
-    url = item["downloads"][format]["url"]
-    split = urllib.parse.urlsplit(url.replace("/download/", "/statdownload/"))
-    query = urllib.parse.parse_qsl(split.query)
-    query.append((".vrs", 1))
-    split = split._replace(query=urllib.parse.urlencode(query))
-    url = urllib.parse.urlunsplit(split)
-    # then fetch that to get the bcbits URL
-    req = build_request(url, identity)
-    req.add_header("accept", "application/json")
-    logging.info(f"fetch {url} as json")
-    with urllib.request.urlopen(req) as f:
-        data = json.load(f)
-    return data["download_url"]
+    for item in blob["digital_items"]:
+        eprint(
+            f"{CLEAR}{item['artist']} - {item['title']} ({item['download_id']}): ",
+            end="",
+        )
+        if already_downloaded(item["download_id"]):
+            eprint("already downloaded")
+            continue
+        eprint("starting...", end="\r")
+        # munge the download URL to request the correct URL for the bcbits CDN
+        url = item["downloads"][format]["url"]
+        split = urllib.parse.urlsplit(url.replace("/download/", "/statdownload/"))
+        query = urllib.parse.parse_qsl(split.query)
+        query.append((".vrs", 1))
+        split = split._replace(query=urllib.parse.urlencode(query))
+        url = urllib.parse.urlunsplit(split)
+        # then fetch that to get the bcbits URL
+        req = build_request(url, identity)
+        req.add_header("accept", "application/json")
+        logging.info(f"fetch {url} as json")
+        with urllib.request.urlopen(req) as f:
+            data = json.load(f)
+        yield data["download_url"]
 
 
 def download_file(url):
@@ -118,6 +126,10 @@ def download_file(url):
         except:  # noqa=E722
             os.remove(filename)
             raise
+
+
+def already_downloaded(id):
+    return len(glob.glob(f"*({id})*")) > 0
 
 
 def eprint(*args, **kwargs):
@@ -163,12 +175,12 @@ if __name__ == "__main__":
                     f"({item['download_id']}): ",
                     end="",
                 )
-                if glob.glob(f"*({item['download_id']})*"):
+                if already_downloaded(item["download_id"]):
                     eprint("already downloaded")
                 else:
                     eprint("starting...", end="\r")
-                    url = bc_download(item["download_url"], identity, args.format)
-                    download_file(url)
+                    for url in bc_download(item["download_url"], identity, args.format):
+                        download_file(url)
 
         if res["last_token"] is None:
             break
