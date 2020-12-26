@@ -12,6 +12,7 @@ import os.path
 import sys
 import urllib.parse
 import urllib.request
+import zipfile
 from collections import namedtuple
 
 try:
@@ -28,7 +29,7 @@ USER_AGENT = (
 )
 CLEAR = "\033[K"
 
-Item = namedtuple("Item", ["artist", "title", "id", "download_url"])
+Item = namedtuple("Item", ["artist", "title", "id", "download_url", "tracks"])
 
 
 def get_identity(identity):
@@ -159,16 +160,36 @@ def items(data):
             title=item["item_title"],
             id=item["tralbum_id"],
             download_url=data["redownload_urls"][sid],
+            tracks=item["num_streamable_tracks"],
         )
 
 
 def already_downloaded(item):
     g = glob.glob(f"*({item.id})*")
     if g:
+        # redownload for pre-orders / albums with new tracks: if this is a zip,
+        # get the track count and compare against the item's streamable tracks
+        # count. if the former is less than the latter, delete and redownload.
+        if g[0].rsplit(".", 1)[1] == "zip":
+            with zipfile.ZipFile(g[0]) as z:
+                count = len(list(filter(is_track, z.namelist())))
+            if item.tracks > count:
+                logging.info(
+                    "remove %s (%s tracks, now has %s)", g[0], count, item.tracks
+                )
+                os.remove(g[0])
+                return False
         progress(g[0], skip=True)
         return True
     else:
         return False
+
+
+def is_track(filename):
+    return any(
+        filename.rsplit(".", 1)[1] == ext
+        for ext in ("flac", "mp3", "m4a", "ogg", "wav", "aiff")
+    )
 
 
 def progress(item, skip=None, at=None, size=None):
