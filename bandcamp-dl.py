@@ -56,22 +56,22 @@ def get_identity(identity):
 def build_request(url, identity=None, *args, **kwargs):
     req = urllib.request.Request(url, *args, **kwargs)
     if identity:
-        req.add_header("cookie", f"identity={identity}")
+        req.add_header("cookie", "identity={}".format(identity))
     req.add_header("user-agent", USER_AGENT)
     return req
 
 
 def bc_json(path, identity, data=None):
     url = urllib.parse.urljoin("https://bandcamp.com/api/", path)
-    logging.info(f"fetch {url} as json")
+    logging.info("fetch {} as json".format(url))
     if data:
         data = json.dumps(data).encode("utf-8")
     with urllib.request.urlopen(build_request(url, identity, data)) as f:
-        return json.load(f)
+        return json.loads(f.read().decode("utf-8"))
 
 
 def bc_pagedata(url, identity):
-    logging.info(f"fetch {url} as html")
+    logging.info("fetch {} as html".format(url))
     with urllib.request.urlopen(build_request(url, identity)) as f:
         for line in f.readlines():
             line = line.decode(f.headers.get_content_charset())
@@ -93,21 +93,21 @@ def bc_download(url, identity, format):
     # then fetch that to get the bcbits URL
     req = build_request(url, identity)
     req.add_header("accept", "application/json")
-    logging.info(f"fetch {url} as json")
+    logging.info("fetch {} as json".format(url))
     with urllib.request.urlopen(req) as f:
-        data = json.load(f)
+        data = json.loads(f.read().decode("utf-8"))
     return data["download_url"]
 
 
 def download_file(item, url):
-    logging.info(f"download {url}")
+    logging.info("download {}".format(url))
     with urllib.request.urlopen(build_request(url)) as f:
         for x in f.headers["content-disposition"].split(";"):
             x = x.strip()
             if x.startswith("filename*=UTF-8''"):
                 filename = urllib.parse.unquote(x.split("''", 1)[1])
         split = filename.rsplit(".", 1)
-        filename = f"{split[0]} ({item.id}).{split[1]}"
+        filename = "{split[0]} ({item.id}).{split[1]}".format(split=split, item=item)
         size = int(f.headers["content-length"])
         try:
             with open(filename, "wb") as t:
@@ -126,7 +126,9 @@ def download_file(item, url):
 
 def collection(identity):
     summary = bc_json("fan/2/collection_summary", identity)["collection_summary"]
-    pagedata = bc_pagedata(f"https://bandcamp.com/{summary['username']}", identity)
+    pagedata = bc_pagedata(
+        "https://bandcamp.com/{}".format(summary["username"]), identity
+    )
 
     for kind in ("collection", "hidden"):
         yield from items(
@@ -137,10 +139,10 @@ def collection(identity):
         )
         data = {
             "fan_id": summary["fan_id"],
-            "older_than_token": pagedata[f"{kind}_data"]["last_token"],
+            "older_than_token": pagedata["{}_data".format(kind)]["last_token"],
         }
         while True:
-            res = bc_json(f"fancollection/1/{kind}_items", identity, data)
+            res = bc_json("fancollection/1/{}_items".format(kind), identity, data)
             yield from items(res)
             if res["more_available"]:
                 data["older_than_token"] = res["last_token"]
@@ -165,7 +167,7 @@ def items(data):
 
 
 def already_downloaded(item):
-    g = glob.glob(f"*({item.id})*")
+    g = glob.glob("*({})*".format(item.id))
     if g:
         # redownload for pre-orders / albums with new tracks: if this is a zip,
         # get the track count and compare against the item's streamable tracks
@@ -194,20 +196,20 @@ def is_track(filename):
 
 def progress(item, skip=None, at=None, size=None):
     if isinstance(item, Item):
-        data = f"{item.artist} - {item.title}"
+        data = "{} - {}".format(item.artist, item.title)
         if item.id:
-            data += f" ({item.id})"
+            data += " ({})".format(item.id)
     else:
         data = item
 
     if skip:
         state = "already downloaded"
     elif at:
-        state = f"{at * 100 // size}%"
+        state = "{}%".format(at * 100 // size)
     else:
         state = "starting..."
 
-    print(f"{CLEAR}{data}: {state}", file=sys.stderr, end="\r", flush=True)
+    print("{}{}: {}".format(CLEAR, data, state), file=sys.stderr, end="\r", flush=True)
     if skip or (at and at == size):
         print(file=sys.stderr)
 
