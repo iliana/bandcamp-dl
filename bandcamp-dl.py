@@ -79,11 +79,14 @@ def bc_pagedata(url, identity):
                 break
     return json.loads(html.unescape(line.split('data-blob="')[1].split('"')[0]))
 
+
 class DownloadURIError(Exception):
     pass
 
+
 class ExpiredDownloadError(DownloadURIError):
     pass
+
 
 def bc_download(url, identity, format):
     items = bc_pagedata(url, identity)["digital_items"]
@@ -246,7 +249,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ignore-expired",
-        help='Warn but continue on expired URLs',
+        help="Warn but continue on expired URLs",
         action="store_const",
         dest="ignore_expired",
         const=True,
@@ -266,6 +269,10 @@ if __name__ == "__main__":
         try:
             download_file(item, bc_download(item.download_url, identity, args.format))
         except ExpiredDownloadError:
-            print("{} - {}: download expired. See https://get.bandcamp.help/hc/en-us/articles/360046095574".format(item.artist, item.title))
+            print(
+                "{} - {}: download expired. See https://get.bandcamp.help/hc/en-us/articles/360046095574".format(
+                    item.artist, item.title
+                )
+            )
             if not args.ignore_expired:
                 sys.exit(1)
